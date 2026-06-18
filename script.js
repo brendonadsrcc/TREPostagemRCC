@@ -5,6 +5,16 @@ course: null
 };
 const MAX_STUDENTS = 3;
 const BRASILIA_TIME_ZONE = 'America/Sao_Paulo';
+const TRE1_MIN_DURATION_MINUTES = {
+CAS: {
+standard: 4,
+dropped: 2
+},
+CFS: {
+standard: 7,
+dropped: 4
+}
+};
 const WORKER_URL = 'https://tre.brendonadsrcc.workers.dev';
 const CORS_PROXY_URL = `${WORKER_URL}/proxy?url=`;
 const TRE1_MACRO_URL = 'https://script.google.com/macros/s/AKfycbxhhtB4r6ec-TeN4BFy80kAh2jqGT-FvZi0bN2iHLiXoxFt1A9akpE9Crf-4q2aMKKN8A/exec';
@@ -477,6 +487,41 @@ return acc;
 }, {});
 
 return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function parseDateTimeLocalToTimestamp(value) {
+const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value || '');
+if (!match) return NaN;
+
+const [, year, month, day, hour, minute, second = '0'] = match;
+const timestamp = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+const parsed = new Date(timestamp);
+
+if (
+parsed.getUTCFullYear() !== Number(year) ||
+parsed.getUTCMonth() !== Number(month) - 1 ||
+parsed.getUTCDate() !== Number(day) ||
+parsed.getUTCHours() !== Number(hour) ||
+parsed.getUTCMinutes() !== Number(minute) ||
+parsed.getUTCSeconds() !== Number(second)
+) {
+return NaN;
+}
+
+return timestamp;
+}
+
+function getBrasiliaElapsedMillisecondsSince(value) {
+const startTimestamp = parseDateTimeLocalToTimestamp(value);
+const nowTimestamp = parseDateTimeLocalToTimestamp(getBrasiliaDateTimeLocalValue());
+
+if (!Number.isFinite(startTimestamp) || !Number.isFinite(nowTimestamp)) return NaN;
+
+return nowTimestamp - startTimestamp;
+}
+
+function formatMinuteDuration(minutes) {
+return minutes === 1 ? '1 minuto' : `${minutes} minutos`;
 }
 
 function setDateTimeInputToBrasiliaNow(inputId, overwrite = true) {
@@ -1848,6 +1893,42 @@ if (!data.correction) errors.push('Descreva a correção necessária.');
 return errors;
 }
 
+function getTre1MinimumDurationRule(data) {
+const courseRules = TRE1_MIN_DURATION_MINUTES[data.course];
+if (!courseRules) return null;
+
+const selectedVerdicts = data.verdicts
+.filter(student => student.name)
+.map(student => student.verdict)
+.filter(Boolean);
+
+if (!selectedVerdicts.length || selectedVerdicts.length !== data.students.length) return null;
+
+const allDropped = selectedVerdicts.every(verdict => verdict === 'Caiu');
+
+return {
+minutes: allDropped ? courseRules.dropped : courseRules.standard,
+label: allDropped ? 'com queda' : 'com aprovado/reprovado'
+};
+}
+
+function getTre1DurationError(data) {
+if (!data.course || !data.startTime) return '';
+
+const durationRule = getTre1MinimumDurationRule(data);
+if (!durationRule) return '';
+
+const elapsedMilliseconds = getBrasiliaElapsedMillisecondsSince(data.startTime);
+if (!Number.isFinite(elapsedMilliseconds)) return 'Informe uma data/horário de início válido.';
+if (elapsedMilliseconds < 0) return 'A data/horário de início não pode estar no futuro.';
+
+const minimumMilliseconds = durationRule.minutes * 60 * 1000;
+if (elapsedMilliseconds >= minimumMilliseconds) return '';
+
+const remainingMinutes = Math.max(1, Math.ceil((minimumMilliseconds - elapsedMilliseconds) / (60 * 1000)));
+return `${data.course} ${durationRule.label} deve ter no mínimo ${formatMinuteDuration(durationRule.minutes)} de duração. Aguarde mais ${formatMinuteDuration(remainingMinutes)} antes de postar.`;
+}
+
 function validateTre1Report(data) {
 const errors = [];
 if (!data.applicator) errors.push('Informe o seu nickname.');
@@ -1867,6 +1948,9 @@ if (student.verdict === 'Caiu' && !student.proof) {
 errors.push(`Insira o link de comprovação do Aluno ${index + 1}.`);
 }
 });
+
+const durationError = getTre1DurationError(data);
+if (durationError) errors.push(durationError);
 
 return errors;
 }
